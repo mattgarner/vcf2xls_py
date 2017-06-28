@@ -7,11 +7,11 @@ import begin
 import vcf
 import xlwt
 import urllib2
-
+import subprocess
+import pprint
 
 
 #### Database queries ####
-
 def geminiDB_query(query):
     """Run a query on GeminiDB database
     
@@ -198,7 +198,6 @@ def get_read_stats(sample):
 
 
 #### Text file data manipulations ####
-
 def gnum2pids(g_number, samplepanels_filepath):
     """Return a list of panel_ids and their genes for the specified g_number
     
@@ -245,6 +244,8 @@ def pids2panelnames(pids, genepanels_filepath):
 def pid2panelname(pid, genepanels_filepath):
     if pid.startswith("_"):
         panel_name = pid
+    elif pid == "8926":
+        panel_name = "TSO"
     
     else:
         with open(genepanels_filepath) as genepanels_fh:
@@ -263,27 +264,34 @@ def pid2panelname(pid, genepanels_filepath):
     return panel_name
 
 
-def panel_name2pid(panel_name, genepanels_filepath):
+def panelnames2pids(panel_names, genepanels_filepath):
+    panel2pid = {}
+    for panel_name in panel_names.split(","):
+        pid = panelname2pid(panel_name, genepanels_filepath)
+        panel2pid[panel_name] = pid
+    return panel2pid
+
+
+def panelname2pid(panel_name, genepanels_filepath):
     if panel_name.startswith("_"):
         pid = panel_name
-
-    with open(genepanels_filepath) as genepanels_fh:
-        for line in genepanels_fh:
-            line_components = line.strip().split("\t")
-            
-            # Skip incomplete records
-            if len(line_components) != 3:
-                continue
-            
-            p_name, p_id, p_gene = line_components
-            if panel_name == p_name:
-                pid = p_id
-                break
-
+    else:
+        with open(genepanels_filepath) as genepanels_fh:
+            for line in genepanels_fh:
+                line_components = line.strip().split("\t")
+                
+                # Skip incomplete records
+                if len(line_components) != 3:
+                    continue
+                
+                p_name, p_id, p_gene = line_components
+                if panel_name == p_name:
+                    pid = p_id
+                    break
     return pid
 
 
-def pids2genes(panel_IDs, genepanels_filepath):
+def pids2genes(pids, genepanels_filepath, genes2transcripts_filepath):
     """Return a dict of panel_ids and their genes
     
     Args:
@@ -296,14 +304,27 @@ def pids2genes(panel_IDs, genepanels_filepath):
     
     panel_genes = {}
 
-    for pid in panel_IDs:
-        genes = pid2genes(pid, genepanels_filepath)
+    # Some genes in the genepanels file have old HGNC identifiers. 
+    # Consequently these gene names do not match those in the 
+    # genes2transcripts file.
+    # This dict is used to map the old alias (the key) to the current
+    # id in the genes2transcripts file(the value).
+
+    gene_alias_dict = get_gene_alias_dict()
+
+    for pid in pids:
+        print "pid", pid
+        genes = pid2genes(pid, genepanels_filepath, genes2transcripts_filepath)
+        # Replace old aliases
+        genes = [gene_alias_dict.get(gene, gene) for gene in genes]
+        print genes
         panel_genes[pid] = genes
     
+    print panel_genes
     return panel_genes
 
 
-def pid2genes(panel_ID, genepanels_filepath):
+def pid2genes(pid, genepanels_filepath, genes2transcripts_filepath):
     """Return a list genes for a specified panel_id
     
     Args:
@@ -317,9 +338,16 @@ def pid2genes(panel_ID, genepanels_filepath):
     panel_genes = []
     
     # Handle single gene panels with _GENE pids
-    if panel_ID.startswith("_"):
-        gene = panel_ID[1:]
+    if pid.startswith("_"):
+        gene = pid[1:]
         panel_genes.append(gene)
+
+    # Handle full TSO
+    elif pid == "8926":
+        with open("/data/gemini/genes/gene_list_trusight_one.txt") as genelist_fh:
+            for line in genelist_fh.readlines()[:40]:  # DEBUG
+                gene = line.strip()
+                panel_genes.append(gene)
     
     # Handle panels with numerical pids
     else:
@@ -331,11 +359,11 @@ def pid2genes(panel_ID, genepanels_filepath):
                 if len(line_components) != 3:
                     continue
                 
-                panel_name, pid, gene = line_components
+                panel_name, panel_ID, gene = line_components
                 if pid == panel_ID:
                     panel_genes.append(gene)
-    
-    return panel_genes
+
+    return list(set(panel_genes))
 
 
 def genes2transcripts(genes, genes2transcripts_filepath):
@@ -351,11 +379,10 @@ def genes2transcripts(genes, genes2transcripts_filepath):
 
     gene_transcripts = {}
     
-    for gene_list in genes.values():
-        for gene in gene_list:
-            transcripts = gene2transcripts(gene, genes2transcripts_filepath)
-            gene_transcripts[gene] = transcripts
-        
+    for gene in genes:
+        transcripts = gene2transcripts(gene, genes2transcripts_filepath)
+        gene_transcripts[gene] = transcripts
+    
     return gene_transcripts
 
 
@@ -384,16 +411,15 @@ def gene2transcripts(gene, genes2transcripts_filepath):
                 for transcript in transcripts:
                     transcripts_for_gene.append(transcript)
     
-    return transcripts_for_gene
+    return list(set(transcripts_for_gene))
 
 
 def transcripts2exons(transcripts):
     transcript_exons = {}
     
-    for gene, transcripts in transcripts.items():
-        for transcript in transcripts:
-            exons = transcript2exons(transcript)
-            transcript_exons[transcript] = exons
+    for transcript in transcripts:
+        exons = transcript2exons(transcript)
+        transcript_exons[transcript] = exons
     return transcript_exons
 
 
@@ -457,7 +483,7 @@ def record_range(vcf_record):
     max_allele_length = max([len(allele) for allele in alleles])
     
     first = vcf_record.POS
-    last = vcf_record.POS + max_allele_length
+    last = vcf_record.POS + (max_allele_length -1)
 
     return [first, last]
 
@@ -465,7 +491,10 @@ def record_range(vcf_record):
 def overlap(a, b):
     a = map(int, [x for x in a])
     b = map(int, [x for x in b])
-    return max(0, min(a[1], b[1]) - max(a[0], b[0]))
+
+    assert all([x >= 0 for x in a]), "Range cannot contain negative number"
+    assert all([x >= 0 for x in b]), "Range cannot contain negative number"
+    return max(0, min(a[1]+1, b[1]+1) - max(a[0], b[0]))
 
 
 def get_csq_field_keys(vcf_filepath):
@@ -485,6 +514,37 @@ def get_csq_field_keys(vcf_filepath):
         return csq_field_keys
 
 
+def get_gene_alias_dict():
+    gene_alias_dict = {   'DTDST'      :'SLC26A2',
+                          'EKLF'       :'KLF1',
+                          # chromosome breaking sydromes
+                          'C7orf11'    :'MPLKIP',
+                          'C7ORF11'    :'MPLKIP',
+                          'CSA/ERCC8'  :'ERCC8',
+                          'TTDA/GTF2H5':'GTF2H5',
+                          'XPG/ERCC5'  :'ERCC5',
+                          'DDB2/XPE'   :'DDB2',
+                          'CSB/ERCC6'  :'ERCC6',
+                          'XPB/ERCC3'  :'ERCC3',
+                          'XPD/ERCC2'  :'ERCC2',
+                          'XPF/ERCC4'  :'ERCC4',
+                          'XPV/POLH'   :'POLH',
+                          'FANCG/XRCC9':'FANCG',
+                          'FANCL/PHF9' :'FANCL',
+                          'OX40'       :'TNFRSF4',
+                          'MRE11'      :'MRE11A',
+                          'IGHM'       :'IGHMBP2',
+                          'FATP4 (SLC27A4)':'SLC27A4',
+                          'FATP4(SLC27A4)' :'SLC27A4',
+                          'FATP4'      :'SLC27A4',
+                          'KCNE5'      :'KCNE1L',
+                          'P3H1'       :'LEPRE1',
+                          'GNAS1'      :'GNAS',
+                          'FBLN4'      :'EFEMP2',
+                          }
+    return gene_alias_dict
+
+
 
 #### Report columns ####
 
@@ -499,7 +559,6 @@ def get_csq_field_keys(vcf_filepath):
 # vcf field functions
 # These only require a vcf_record as input
 # Generally DNA level info
-
 def chromosome_col(vcf_record, alt, transcript, csq, csq_field_keys):
     # Ignored params
     del alt, transcript, csq, csq_field_keys
@@ -626,7 +685,6 @@ def depth_col(vcf_record, alt, transcript, csq, csq_field_keys):
 # csq field functions
 # There require a specific vcf_record csq as input
 # Generally RNA/protein level info
-
 def gene_col(vcf_record, alt, transcript, csq, csq_field_keys):
     # Ignored params
     del vcf_record, alt, transcript
@@ -639,16 +697,25 @@ def c_pos_col(vcf_record, alt, transcript, csq, csq_field_keys):
     # Ignored params
     del vcf_record, alt, transcript
     field_name = "HGVSc"
-    c_dot = get_csq_field(field_name, csq, csq_field_keys).split(":")[1]
+    tx_c_dot = get_csq_field(field_name, csq, csq_field_keys)
     
-    # Find the first letter (excluding c.)
-    for index, char in enumerate(c_dot[2:]): # skip the "c." prefix
-        if char.isalpha():  
-            end_of_pos = index + 2
-            break
+    # Sometimes no c dot is present e.g. downstream variants
+    if tx_c_dot:
+        # Remove tx prefix
+        c_dot = tx_c_dot.split(":")[1]
+        
+        # Find the first letter (excluding c.)
+        for index, char in enumerate(c_dot[2:]): # skip the "c." prefix
+            if char.isalpha():  
+                end_of_pos = index + 2
+                break
     
-    # Split c_dot into pos and change by splitting at this pos
-    c_pos = c_dot[:end_of_pos]
+        # Split c_dot into pos and change by splitting at this pos
+        c_pos = c_dot[:end_of_pos]
+    
+    else:
+        c_pos = tx_c_dot
+    
     return c_pos
 
 
@@ -656,16 +723,25 @@ def c_change_col(vcf_record, alt, transcript, csq, csq_field_keys):
     # Ignored params
     del vcf_record, alt, transcript
     field_name = "HGVSc"
-    c_dot = get_csq_field(field_name, csq, csq_field_keys).split(":")[1]
+    tx_c_dot = get_csq_field(field_name, csq, csq_field_keys)
     
-    # Find the first letter (excluding c.)
-    for index, char in enumerate(c_dot[2:]): # skip the "c." prefix
-        if char.isalpha():   
-            end_of_pos = index + 2
-            break
+    # Sometimes no c dot is present e.g. downstream variants
+    if tx_c_dot:
+        # Remove tx prefix
+        c_dot = tx_c_dot.split(":")[1]
+        
+        # Find the first letter (excluding c.)
+        for index, char in enumerate(c_dot[2:]): # skip the "c." prefix
+            if char.isalpha():   
+                end_of_pos = index + 2
+                break
+        
+        # Split c_dot into pos and change by splitting at this pos
+        c_change = c_dot[end_of_pos:]
+
+    else:
+        c_change = tx_c_dot
     
-    # Split c_dot into pos and change by splitting at this pos
-    c_change = c_dot[end_of_pos:]
     return c_change
 
 
@@ -712,36 +788,27 @@ def OMIM_col(vcf_record, alt, transcript, csq, csq_field_keys):
     
     gene = get_csq_field("HGNC", csq, csq_field_keys)
 
-    # Prepare request for gene
-    api_request = construct_api_request(gene)
+    genemap = get_genemap(gene)
 
-    # Submit request
-    api_response = submit_api_request(api_request)
-    
-    # Extract relevant data from response
-    extracted_data = extract_data(api_response, gene)
+    if not genemap:
+        return ""
 
-    # Get inheritance modes
-    im_strings = []
-    for im, disease_list in extracted_data.items():
-        if im:
-            im = im.replace("Autosomal recessive","AR")
-            im = im.replace("Autosomal dominant","AD")
-            im = im.replace("X-linked dominant","XD")
-            im = im.replace("X-linked recessive","XR")
-            im_string = "%s: %s" % (im, ", ".join(disease_list))
-            im_strings.append(im_string)
-        
-    joined_im_string = " | ".join(im_strings)
-    
-    return joined_im_string
+    mim = genemap["geneMap"]["mimNumber"]
+
+    phenotype_inheritance = get_phenotype_inheritance(genemap)
+
+    URL = "https://www.omim.org/entry/%s" % mim
+    text = phenotype_inheritance
+    link = xlwt.Formula('HYPERLINK("%s";"%s")' % (URL, text))
+
+    return link
 
 
 # Other field functions
 # These require the specific alt and/or transcript as input
 def transcript_col(vcf_record, alt, transcript, csq, csq_field_keys):
     # Ignored params
-    del vcf_record
+    del vcf_record, alt
     field_name = "RefSeq"
     csq_transcripts = get_csq_field(field_name, csq, csq_field_keys).split("&")
     assert transcript in csq_transcripts, "Mismatched transcipts!"
@@ -787,22 +854,20 @@ def add_summary_sheet(wb, sample, styles, gene_data_dict, panels):
     covered_len = 0
 
     for gene in gene_data_dict:
-        for transcript in gene_data_dict[gene]["transcripts"]:
-            total_len += gene_data_dict[gene]["transcripts"][transcript]["Region length"]
-            covered_len += gene_data_dict[gene]["transcripts"][transcript]["20+x"]
+        total_len += gene_data_dict[gene]["Total length"]
+        covered_len += gene_data_dict[gene]["20x length"]
 
     coverage_perc = (float(covered_len)/total_len) * 100
-    coverage_perc_field = "%s %%" % str(round(coverage_perc, 2))
-
+    coverage_perc_field = "%0.2f %%" % coverage_perc
 
     # Infer gender
     sry = sry_present(sample)
     if sry:
-        sry_field = "True"
+        sry_field = "Yes"
         inferred_gender_field = "Male"
     else:
-        sry_field = "False"
-        inferred_gender_field = "Male"
+        sry_field = "No"
+        inferred_gender_field = "Female"
 
     # Report text
     report_text_field = "%s of the target sequence within this panel was sequenced to a depth of 20 fold or more, with analytical sensitivity of 98.3%% - 100%% (95%% Confidence Intervals). The presence of variants reported above, except for variants of unknown significance, has been confirmed by Sanger sequencing. Variants with a population frequency greater than 1 in 500 for dominant conditions, and 1 in 50 for recessive disorders have been deemed insignificant and are not reported. Variants are named using HGVS nomenclature, where nucleotide 1 is the A of the ATG-translation initiation codon." % coverage_perc_field
@@ -893,9 +958,13 @@ def add_geneqc_sheet(wb, sample, styles, gene_data_dict):
         ws.write(row_index, col_index, column_header, style=styles["bold"])
     row_index += 1
 
+    total_len = sum([gene_data["Total length"] for gene_data in gene_data_dict.values()])
+    twentyx_len = sum([gene_data["20x length"] for gene_data in gene_data_dict.values()])
+    twentyx_perc = (float(twentyx_len)/total_len) * 100
+
     for gene in sorted(gene_data_dict):
         for transcript in gene_data_dict[gene]["transcripts"]:
-                        
+
             # Set style rules here
             # Default
             row_style = styles["plain_text"]
@@ -911,10 +980,16 @@ def add_geneqc_sheet(wb, sample, styles, gene_data_dict):
             row_index += 1
         row_index += 1
 
+    # The 'Total' row
+    ws.write(row_index, 0, "Total:")
+    ws.write(row_index, columns.index("Region length"), total_len)
+    ws.write(row_index, columns.index("20+x"), twentyx_len)
+    ws.write(row_index, columns.index("20+x %"), "%.2f" % twentyx_perc)
+
     ws = freeze_header(ws)
 
     # Column widths
-    col_widths = [12,16,14,10,8,8,8,8,8,8,8,8]
+    col_widths = [14,16,14,10,8,8,8,8,8,8,8,8]
     set_col_widths(ws, col_widths)
 
     # Header row height
@@ -940,12 +1015,12 @@ def add_exonqc_sheet(wb, sample, styles, gene_data_dict):
 
     # Get data
     for gene in sorted(gene_data_dict):
-        
+
         for transcript in gene_data_dict[gene]["transcripts"]:
-            
+
             # Write data rows
             for exon, exon_data in sorted(gene_data_dict[gene]["transcripts"][transcript]["exons"].items()):
-                
+
                 # Set style rules here
                 # Default
                 row_style = styles["plain_text"]
@@ -964,7 +1039,7 @@ def add_exonqc_sheet(wb, sample, styles, gene_data_dict):
     ws = freeze_header(ws)
 
     # Column widths
-    col_widths = [12,16,30,12,12,12,12,8,8,8,8,12,24,10,16]
+    col_widths = [14,16,30,12,12,12,12,8,8,8,8,12,24,10,16]
     set_col_widths(ws, col_widths)
 
     # Header row height
@@ -1051,7 +1126,7 @@ def generate_styles():
                      "red_text":"font: color red",
                      "orange_text":"font: color orange",
                      "summary_table_header": "pattern: pattern solid, fore_colour cyan_ega;\
-                                              font: color black;\
+                                              font: color black, bold on;\
                                               borders: left thin, right thin, top thin, bottom thin;",
                      "table_cell":           "borders: left thin, right thin, top thin, bottom thin;",
                      "table_merge_fix":      "borders: left thin;",
@@ -1092,7 +1167,6 @@ def write_row_to_worksheet(ws, row_number, row_data, style):
 
 
 # CSQ stuff
-
 def get_csq_field(field_name, csq, csq_field_keys):
 
     target_field_index = csq_field_keys.index(field_name)
@@ -1119,11 +1193,17 @@ def get_csq_dict(vcf_record, gene_data_dict, csq_field_keys):
         for gene in gene_data_dict:
             for transcript in gene_data_dict[gene]["transcripts"]:
                 if transcript in csq_transcripts:
+                    print
+                    print vcf_record
+                    print csq
+                    print alleles
+                    print gene, transcript
                     # it's the right transcript
                     # which alt does it belong to
                     allele_field_name = "Allele"
                     allele_field_index = csq_field_keys.index(allele_field_name)
                     allele = csq_fields[allele_field_index]
+                    print allele
                     allele_index = alleles.index(allele)
                     alt = alts[allele_index]
                     csq_dict.setdefault(alt, {})
@@ -1164,14 +1244,13 @@ def alts2csqallele(vcf_record):
                 csq_alt = "-"
             else:
             # many:many
-                csq_alt = alt_seq[:1]
+                csq_alt = alt_seq[1:]
     
         csq_alleles.append(csq_alt)
     return csq_alleles
 
 
 # Decon for dosage
-   
 def decon_dict(decon_results_filepath):
     """Convert a DECoN results file into a python dict
     
@@ -1276,35 +1355,45 @@ def decon_bayes_interpretation(bayes_factor):
 
 
 # Sequencing QC stuff
-
 def get_gene_data_dict(sample, panel_ids, genepanels_filepath, genes2transcripts_filepath, decon_filepath):
     
+    print 1
     panel_names = pids2panelnames(panel_ids, genepanels_filepath)
-    panel_genes = pids2genes(panel_ids, genepanels_filepath)
-    gene_transcripts = genes2transcripts(panel_genes, genes2transcripts_filepath)
-    transcript_regions = transcripts2exons(gene_transcripts)
-
-    # Handle full exome
-    full_exome_pid = "8926"
-    if full_exome_pid in panel_ids:
-        panel_genes[full_exome_pid] = ["ALL THE GENES"] # TO DO
+    print 2
+    panel_genes = pids2genes(panel_ids, genepanels_filepath, genes2transcripts_filepath)
+    print 3
+    gene_names = sorted([gene for genes_list in panel_genes.values()
+                            for gene in genes_list])
+    print 4
+    gene_transcripts = genes2transcripts(gene_names, genes2transcripts_filepath)
+    print 5 
+    transcript_ids = [transcript for transcripts_list in gene_transcripts.values()
+                            for transcript in transcripts_list]
+    print 6
+    transcript_regions = transcripts2exons(transcript_ids)
+    print 7
 
     #decon_filepath = get_decon_results_filepath(sample)
     decon_data_dict = decon_dict(decon_filepath)
-    
+    print 8
+
     gene_data_dict = {}
 
     # Define genes, transcripts, exons in panel
+    
     for panel_id in panel_ids:
+        print "PROCESSING PANEL:", panel_id
         
         for gene in panel_genes[panel_id]:
-            gene_data_dict.setdefault(gene, {})
+            print gene
 
+            gene_data_dict.setdefault(gene, {})
+            
             for transcript in gene_transcripts[gene]:
+
                 gene_data_dict[gene].setdefault("transcripts", {})
                 gene_data_dict[gene]["transcripts"][transcript] = {}
-
-                
+                                
                 # Query the gemini database for performance data
                 query = """ SELECT  sam.name as sample, 
                                     ge.name as HGNC, 
@@ -1326,6 +1415,7 @@ def get_gene_data_dict(sample, panel_ids, genepanels_filepath, genes2transcripts
                             WHERE   ge.refseq like '%%%s%%' and sam.name = '%s' 
                         """ % (transcript, sample)
                 result = geminiDB_query(query)
+
 
                 #first_record = True
                 for record in result:
@@ -1363,27 +1453,97 @@ def get_gene_data_dict(sample, panel_ids, genepanels_filepath, genes2transcripts
                     gene_data_dict[gene]["transcripts"][transcript]["exons"][exon] = update_exon_with_decon(gene_data_dict[gene]["transcripts"][transcript]["exons"][exon], decon_data_dict)
 
 
-                # Once the full exon dict is built we then generate values for each
-                # gene(# missing bases etc) by using the dict
+    # Once the full exon dict is built we then generate values for each
+    # gene(# missing bases etc) by using the dict
 
-                # The order of these calls matters - some are dependent on the
-                # output of preceeding calls being present in the data dict
-                for gene in gene_data_dict:
-                    for transcript in gene_data_dict[gene]["transcripts"]:
-                        
-                        transcript_data = gene_data_dict[gene]["transcripts"][transcript]
-                        
-                        transcript_data["Gene"] = gene
-                        transcript_data["Transcript"] = transcript
-                        transcript_data["Region length"] = calc_region_length(transcript_data)
-                        transcript_data["Min depth"] = calc_gene_min_depth(transcript_data)
-                        transcript_data["Missing"] = calc_bases_in_depth_bin(transcript_data, "0x")
-                        transcript_data["1-5x"] = calc_bases_in_depth_bin(transcript_data, "1-5x")
-                        transcript_data["6-9x"] = calc_bases_in_depth_bin(transcript_data, "6-9x")
-                        transcript_data["10-19x"] = calc_bases_in_depth_bin(transcript_data, "10-19x")
-                        transcript_data["20+x"] = calc_gene_20x_len(transcript_data)
-                        transcript_data["20+x %"] = calc_gene_20x_perc(transcript_data)    
+    # The order of these calls matters - some are dependent on the
+    # output of preceeding calls being present in the data dict
+    print "\n\n\nAdding gene stats"
+    for gene in sorted(gene_data_dict):
+        print gene
+        transcripts = gene_data_dict[gene].get("transcripts")
+        assert transcripts, "No Tx for %s. Aborting!" % gene
+        for transcript in transcripts:
+            print transcript
 
+            transcript_data = gene_data_dict[gene]["transcripts"][transcript]
+            
+            transcript_data["Gene"] = gene
+            transcript_data["Transcript"] = transcript
+            transcript_data["Region length"] = calc_region_length(transcript_data)
+            transcript_data["Min depth"] = calc_gene_min_depth(transcript_data)
+            transcript_data["Missing"] = calc_bases_in_depth_bin(transcript_data, "0x")
+            transcript_data["1-5x"] = calc_bases_in_depth_bin(transcript_data, "1-5x")
+            transcript_data["6-9x"] = calc_bases_in_depth_bin(transcript_data, "6-9x")
+            transcript_data["10-19x"] = calc_bases_in_depth_bin(transcript_data, "10-19x")
+            transcript_data["20+x"] = calc_gene_20x_len(transcript_data)
+            transcript_data["20+x %"] = calc_gene_20x_perc(transcript_data)    
+    
+    # If we used one tx per gene then this section would
+    # not be necessary - we could just use the tx stats.
+    # Since we use multiple txs in some cases we need 
+    # stats for the region comprising all collapsed
+    # transcripts we use for each gene
+    
+        # For each gene
+        # x = what is the total length (merge all exons intervals)
+        # y = what is the total non-20x (merge all sub20x intervals)
+        # y/x * 100 = 20x % for gene
+        gene_data = gene_data_dict[gene]
+        exon_ranges = []
+        sub_20x_ranges = []
+
+        for transcript, transcript_data in gene_data["transcripts"].items():
+            for exon, exon_data in transcript_data["exons"].items():
+                exon_ranges.append((exon_data["start"], exon_data["end"]))
+        
+                # Each exon data field can contain more than one range
+                # e.g. "1:123-125, 1:130-132"
+                # Split these into individual ranges on ","
+                # Then merge all the split ranges into one list
+                # Makes a list like [1:123-456, 1:789-1011]
+                # First merge the strings into one.Then split on "," to 
+                # separate ranges into a list with one range per item
+        
+                lt_20x = ",".join([exon_data["0x"    ],
+                                   exon_data["1-5x"  ],
+                                   exon_data["6-9x"  ],
+                                   exon_data["10-19x"]
+                                   ])
+
+                lt_20x = [x for x in lt_20x.split(",") if x != ""]
+                
+                for lt_20x_range in lt_20x:
+                    start, end = map(int, lt_20x_range.split(":")[1].split("-"))
+                    sub_20x_ranges.append((start, end))
+
+        merged_sub_20x_ranges = merge_intervals(sub_20x_ranges)
+        sub_20x_len = sum([(r[1]-r[0])+1 for r in merged_sub_20x_ranges])
+
+        merged_exon_ranges = merge_intervals(exon_ranges)
+        total_len = sum([(r[1]-r[0])+1 for r in merged_exon_ranges])
+
+        gene_data = gene_data_dict[gene]
+        
+        gene_data["Total length"] = total_len
+        gene_data["20x length"] = total_len - sub_20x_len
+        gene_data["20+x %"] = (float(gene_data["20x length"])/total_len) * 100
+
+    '''
+    gene_data = gene_data_dict[gene]
+    gene_data["Gene"] = gene
+    gene_data["Transcript"] = gene_data_dict[gene]["transcripts"].keys()
+    gene_data["Collapsed regions"] = []
+    gene_data["Region length"] = calc_region_length(transcript_data)
+    #gene_data["Min depth"] = calc_gene_min_depth(transcript_data)
+    #gene_data["Missing"] = calc_bases_in_depth_bin(transcript_data, "0x")
+    #gene_data["1-5x"] = calc_bases_in_depth_bin(transcript_data, "1-5x")
+    #gene_data["6-9x"] = calc_bases_in_depth_bin(transcript_data, "6-9x")
+    #gene_data["10-19x"] = calc_bases_in_depth_bin(transcript_data, "10-19x")
+    gene_data["20+x"] = calc_gene_20x_len(transcript_data)
+    gene_data["20+x %"] = calc_gene_20x_perc(transcript_data)                                    
+    '''
+    
     return gene_data_dict
            
 
@@ -1466,8 +1626,45 @@ def calc_exon_exp_mean_depth(exon):
     return "TODO"
 
 
-# Variant sheet filters
+def merge_intervals(ranges):
+    # create a list of starts and ends
+    stends = [ (r[0], 1) for r in ranges ]
+    stends += [ (r[1], -1) for r in ranges ]
+    stends.sort(key=lambda x: x[0])
 
+    # now we should have a list of starts and ends ordered by position,
+    # e.g. if the ranges are 5..10, 8..15, and 12..13, we have
+    # (5,1), (8,1), (10,-1), (12,1), (13,-1), (15,-1)
+
+    # next, we form a cumulative sum of this
+    s = 0
+    cs = []
+    for se in stends:
+        s += se[1]
+        cs.append((se[0], s))
+
+    # this is, with the numbers above, (5,1), (8,2), (10,1), (12,2), (13,1), (15,0)
+    # so, 5..8 belongs to one range, 8..10 belongs to two overlapping range,
+    # 10..12 belongs to one range, etc
+
+    # now we'll find all contiguous ranges
+    # when we traverse through the list of depths (number of overlapping ranges), a new
+    # range starts when the earlier number of overlapping ranges has been 0
+    # a range ends when the new number of overlapping ranges is zero 
+    prevdepth = 0
+    start = 0
+    merged = []
+    for pos, depth in cs:
+        if prevdepth == 0:
+            start = pos
+        elif depth == 0:
+            merged.append((start, pos))
+        prevdepth = depth
+
+    return merged
+
+
+# Variant sheet filters
 def generate_variant_type_filter(variant_types):
     def variant_type_filter(csq, csq_field_keys):
         field_name = "Consequence"
@@ -1483,18 +1680,18 @@ def generate_variant_type_filter(variant_types):
             return False
     return variant_type_filter
 
-stop_gained_filter = generate_variant_type_filter(["stop_gained_variant"])
-frameshift_filter =  generate_variant_type_filter(["frameshift_variant"])
-splice_filter =  generate_variant_type_filter(["splice_region_variant"])
-missense_filter = generate_variant_type_filter(["missense_variant"])
+stop_gained_filter = generate_variant_type_filter(["stop_gained_variant","transcript_ablation","start_lost"])
+frameshift_filter =  generate_variant_type_filter(["frameshift_variant","inframe_insertion","inframe_deletion"])
+splice_filter =  generate_variant_type_filter(["splice_region_variant","splice_acceptor_variant","splice_donor_variant"])
+missense_filter = generate_variant_type_filter(["missense_variant","stop_lost"])
 synonymous_filter = generate_variant_type_filter(["synonymous_variant"])
-# Other_filter should always contain "" to act as a catch-all for variants
+# other_filter should always contain "" to act as a catch-all for variants
 # which pass all other filters
 other_filter = generate_variant_type_filter([""])
 
 
 #### OMIM Stuff ####
-
+"""
 def construct_api_request(search_term):
     '''
     Assemble an OMIM API URL for a specific search term
@@ -1510,18 +1707,34 @@ def construct_api_request(search_term):
 
     api_request = omim_api_url + "/" + handler + "/" + action + "?" + search_params  + "&limit=" + str(limit_results) +  "&format=" + response_format + "&include=" + include + "&" + API_key
     return api_request
+"""
 
+def construct_api_request(search_term):
+    '''
+    Assemble an OMIM API URL for a specific search term
+    '''
+    omim_api_url = "http://api.omim.org/api"
+    response_format = "python"
+    handler = "geneMap"
+    action = "search"
+    API_key = "apiKey=YwfXGOC4Sim_82R9qt8Xzw"
+    limit_results = 5
+    search_params = "search=gene_symbol%3B" + str(search_term)
+    include = "all"
+
+    api_request = omim_api_url + "/" + handler + "/" + action + "?" + search_params  + "&limit=" + str(limit_results) +  "&format=" + response_format + "&include=" + include + "&" + API_key
+    return api_request
 
 def submit_api_request(api_request):
     '''
     Submit an api request to the OMIM API and return the response
     '''
-    #print api_request
+    print api_request
     api_response = urllib2.urlopen(api_request)
     response_data = eval(api_response.read())
     return response_data
 
-
+"""
 def extract_data(data, query_HUGO):
     '''
     Extract entries for a specific HGNC gene name from returned OMIM API data
@@ -1576,9 +1789,78 @@ def extract_data(data, query_HUGO):
         inheritance_dict.setdefault(mode, []).append(disease)
     return inheritance_dict
 
+"""
+
+def get_genemap(query_HUGO):
+    '''
+    Extract geneMap for a specific HGNC gene name from returned OMIM API data
+    '''
+    query_HUGO = query_HUGO.upper()
+    print query_HUGO
+
+    genemaps = []
+
+    api_request = construct_api_request(query_HUGO)
+    api_response = submit_api_request(api_request)
+
+    # Grab the genemap specific for the gene - search may return others
+    search_results = api_response["omim"]["searchResponse"]["geneMapList"]
+    
+    for genemap in search_results:
+        
+        # OMIM symbols are mixed case, 
+        gene_symbols = [x.upper() for x in genemap["geneMap"]["geneSymbols"].split(",")]
+
+        if query_HUGO in gene_symbols:
+            genemaps.append(genemap)
+
+    #assert len(genemaps) <= 1, "UNEXPECTED NUMBER OF GENEMAPS %d" % len(genemaps)
+
+    if len(genemaps) != 1:
+        return None
+    return genemaps[0]
+
+
+def get_phenotype_inheritance(genemap):
+    if genemap == None:
+        return ""
+
+    phenotype_inheritance = {}
+ 
+    # Phenotype level data - many per gene/entry
+    for phenotype in genemap["geneMap"].get("phenotypeMapList", []):
+        phenotype_name = phenotype.get("phenotypeMap", {}).get("phenotype")
+        phenotype_inheritance_mode = phenotype.get("phenotypeMap", {}).get("phenotypeInheritance")
+        
+        # Don't return 'nondiseases' ' [ ' 
+        # or susceptibility for multifactorial diseases ' { 
+        if phenotype_name[0] not in ["[", "{"]:
+            if phenotype_inheritance_mode != None:
+                phenotype_inheritance[phenotype_name] = phenotype_inheritance_mode
+
+    # Collapse results
+    all_pheno_inheritance = []
+    for phenotype in phenotype_inheritance:
+        inheritance_modes = list(set(x for x in phenotype_inheritance.values()))
+        all_pheno_inheritance += inheritance_modes
+    collapsed_pheno_inheritance = list(set(all_pheno_inheritance))
+
+    # Abbreviate terms
+    inheritance_mode_mapping = [("Autosomal recessive","AR"),
+                                ("Autosomal dominant","AD"),
+                                ("X-linked dominant","XD"),
+                                ("X-linked recessive","XR"),
+                                ]
+
+    for index, inheritance_mode in enumerate(collapsed_pheno_inheritance):
+        for long_name, short_name in inheritance_mode_mapping:
+            collapsed_pheno_inheritance[index] = \
+                collapsed_pheno_inheritance[index].replace(long_name, short_name)
+    
+    return ",".join(collapsed_pheno_inheritance)
+
 
 # Other
-
 def get_vcf_sample_ids(vcf_filepath):
     """Return a list of all sample ids in a vcf file
     
@@ -1594,84 +1876,102 @@ def get_vcf_sample_ids(vcf_filepath):
     return sample_ids
 
 
-def sry_present(sample):
+def sry_present(sample, depth_threshold=50):
     sry_read_depth = sry_depth(sample)
-    if sry_read_depth >= 50:
+    if sry_read_depth >= depth_threshold:
         return True
     else:
         return False
 
 
-def get_output_filepath(vcf_filepath, output_filepath):
-    if output_filepath:
-        assert not os.path.exists(output_filepath),\
-            "Output file already exists!\n%s" % output_filepath
+def get_output_filepath(vcf_filepath):
     
     # If a filename is not specified we will generate an output filepath
     # in the same dir as the input vcf, with a filename like:
     # G001234_v3.xls
-    else:
-        sample = os.path.basename(vcf_filepath).split(".")[0]
-        directory = os.path.dirname(vcf_filepath)
-        xls_filename = "%s_v3.xls" % sample
+
+    sample = os.path.basename(vcf_filepath).split(".")[0]
+    directory = "/data/projects/matt/vcf2xls_py/test_data/" # debug os.path.dirname(vcf_filepath)
+    xls_filename = "%s_v3.xls" % sample
+    output_filepath = os.path.join(directory, xls_filename)
+
+    # If the default filename already exists, then add a numerical
+    # suffix, increment by 1 until a unique name is found, like:
+    # G001234_v3_1.xls  
+    i = 0
+    while os.path.exists(output_filepath):
+        i += 1
+        suffix = "_%d" % i
+        xls_filename = "%s_v3%s.xls" % (sample, suffix)
         output_filepath = os.path.join(directory, xls_filename)
 
-        # If the default filename already exists, then add a numerical
-        # suffix until a unique name is found, like:
-        # G001234_v3_1.xls  
-        i = 0
-        while os.path.exists(output_filepath):
-            i += 1
-            suffix = "_%d" % i
-            xls_filename = "%s_v3%s.xls" % (sample, suffix)
-            output_filepath = os.path.join(directory, xls_filename)
+    return os.path.abspath(output_filepath)
 
-    return output_filepath
-        
+
+def annotate_vcf(vcf_filepath):
+    if vcf_filepath.endswith(".annotated.vcf"):
+        return vcf_filepath
+    else:
+        print "TODO - NEED TO ANNOTATE UNANNOTATED VCFS"
+        print "USE NEW PIPELINE?"
+        exit()
+
+
+def gene_coverage(gene_data_dict):
+    pass
+
 
 @begin.start
-def main(vcf_filepath,
-         output_filepath=None,
-         decon_filepath="/data/projects/matt/cnv/DECoN_results/170405_170407_NS500192/170405_170407_NS500192_all.txt",
-         samplepanels_filepath="/data/gemini/BioinformaticManifest.txt", 
-         genes2transcripts_filepath="/data/gemini/genes2transcripts", 
-         genepanels_filepath="/data/gemini/genepanels",
-         panels=None,
-         exon_flank=30):
+def main(
+    vcf_filepath,
+    decon_filepath="/data/projects/matt/cnv/DECoN_results/170405_170407_NS500192/170405_170407_NS500192_all.txt",
+    samplepanels_filepath="/data/gemini/BioinformaticManifest.txt",
+    genes2transcripts_filepath="/data/gemini/genes2transcripts",
+    genepanels_filepath="/data/gemini/genepanels",
+    panels=None,
+    exon_flank=30
+    ):
 
     print "### Checking input ###"
+    
     # Check that all input files exist
     input_filepaths = [ vcf_filepath,
                         samplepanels_filepath, 
                         genes2transcripts_filepath,
-                        genepanels_filepath]
+                        genepanels_filepath ]
+
+    # Would be nice to auto detect this - requires a sensible storage system
     if decon_filepath:
         input_filepaths.append(decon_filepath)
-    
+
     for filepath in input_filepaths:
         assert os.path.exists(filepath),\
             "File not found: %s" % filepath
- 
+
     # Check that the vcf file contains data for the sample specified 
     # in the filename
-    vcf_sample_IDs = get_vcf_sample_ids(vcf_filepath)
-    assert len(vcf_sample_IDs) == 1,\
+    vcf_sample_ids = get_vcf_sample_ids(vcf_filepath)
+    assert len(vcf_sample_ids) == 1,\
         "Multiple samples in vcf file"
-    
-    filename_sample_ID = os.path.basename(vcf_filepath).split(".")[0]
-    
-    assert filename_sample_ID in vcf_sample_IDs,\
-        "SampleID in filename not found in file!"
-    
-    sample_id = filename_sample_ID
 
-    output_filepath = get_output_filepath(vcf_filepath, output_filepath)
+    sample_id = os.path.basename(vcf_filepath).split(".")[0]
+
+    assert sample_id in vcf_sample_ids,\
+        "SampleID in filename not found in file!"
+
+    output_filepath = get_output_filepath(vcf_filepath)
+
+    # Annotate any unannotated vcfs
+    vcf_filepath = annotate_vcf(vcf_filepath)
 
 
     #### Generate sample/panel specific data ####
     print "### Generating panel data ###"
     if panels:
-        panel_IDs = panel_names2pids(panels)
+        if panels == "full":
+            panel_IDs = ["8926"]
+        else:
+            panel_IDs = panelnames2pids(panels, genepanels_filepath)
     else:
         panel_IDs = gnum2pids(sample_id, samplepanels_filepath)
 
@@ -1679,9 +1979,9 @@ def main(vcf_filepath,
 
     panel_names = pids2panelnames(panel_IDs, genepanels_filepath)
 
+
     #### Generate vcf specific metadata ####
     csq_field_keys = get_csq_field_keys(vcf_filepath)
-
 
 
     # Set up the xls workbook
@@ -1692,41 +1992,48 @@ def main(vcf_filepath,
         # Our vcfs do have such spaces(in the VEP consequence strings)
         # so this is required to correctly parse the vcfs
         vcf_reader = vcf.Reader(vcf_fh, strict_whitespace=True)
- 
+
         styles = generate_styles()
 
         # Make a workbook
         wb = xlwt.Workbook()
 
-        # Add the non-variant sheets
+        # Add the non-variant sheets to the workbook
         print "### Adding QC sheets ###"
         wb = add_summary_sheet(wb, sample_id, styles, gene_data_dict, panel_names)
         wb = add_geneqc_sheet(wb, sample_id, styles, gene_data_dict)
         wb = add_exonqc_sheet(wb, sample_id, styles, gene_data_dict)
 
-
         print "### Setting up variant sheets ###"
+        
         # Sheets and filters
-        # For each variant sheet, provide a sheet name and a function 
-        # which takes a row and returns true if the row should be 
-        # assigned to the sheet. 
-        # These will be executed in the order of the list, and
-        # the row is assigned to the sheet corresponding to the first 
+        # For each variant sheet, provide a sheet name and a filtering
+        # function which takes a row and returns true if the row should
+        # be assigned to the sheet.
+        # These functions will be executed in the order of the list, and
+        # the row assigned to the sheet corresponding to the first 
         # function to return True. The final sheet function should
         # always return True to capture any variants not assigned to 
         # other sheets
 
+        # TO DO - check each filter matches appropriate csq values in GO
         sheets = [  ("stop_gained", stop_gained_filter),
                     ("frameshift_variant", frameshift_filter),
                     ("splice", splice_filter),
                     ("missense", missense_filter),
+                    ("synonymous", synonymous_filter),
                     ("other", other_filter),
                  ]
 
-        # Specify column headers, functions to generate values,
+        sheet_names = [sheet[0] for sheet in sheets]
+
+        # Specify column headers, functions to generate column values,
         # and col widths (in chars)
         # Cols will appear in the same order in the xls report
-        column_functions =     [("Gene", gene_col, 8),
+        # To add a new column add it to this list, along with a *_col
+        # function to generate the value
+
+        column_functions =     [("Gene", gene_col, 14),
                                 ("Transcript", transcript_col, 16),
                                 ("Chr", chromosome_col, 4),
                                 ("Start", start_col, 11),
@@ -1749,13 +2056,13 @@ def main(vcf_filepath,
                                 ("Gnomad(E)\nAF", af_gnomad_exome_col, 12),
                                 ("Gnomad(G)\nAF", af_gnomad_genome_col, 12),
                                 ("Consequences", consequences_col, 30),
-                                ("OMIM\nIM", OMIM_col, 30),
+                                #("OMIM\nIM", OMIM_col, 10),
                                 ]
 
         column_names = [x[0] for x in column_functions]
         column_widths = [x[2] for x in column_functions]
         
-        # Add variant sheets
+        # Add variant sheets to the workbook
         variant_sheets = {sheet[0]:wb.add_sheet(sheet[0]) for sheet in sheets}
 
         # Track the current row in each of the sheets to enable 
@@ -1768,7 +2075,8 @@ def main(vcf_filepath,
         for sheet_name, ws in variant_sheets.items():
                         
             # Each cell is written individually, so go through each col
-            # in the row
+            # in the row. For each cell we need a row index, a col index,
+            # a value and a style
             for col_index, col in enumerate(column_functions):
                 col_name, column_function, _ = col
                 row_index = current_row_index[sheet_name]
@@ -1784,7 +2092,8 @@ def main(vcf_filepath,
         # Now populate the sheets with variants
         print "### Populating variant sheets ###"
         
-        sheet_names = [sheet[0] for sheet in sheets]
+        # Tracks the gene of the most recently added record
+        # Used to enable addition of empty lines between genes 
         current_gene_per_sheet = dict.fromkeys(sheet_names, None)
 
         for vcf_record in vcf_reader:
@@ -1818,7 +2127,7 @@ def main(vcf_filepath,
                             column_function(vcf_record=vcf_record,
                                             alt=alt, 
                                             transcript=transcript, 
-                                            csq=csq, 
+                                            csq=csq,
                                             csq_field_keys=csq_field_keys)
                         row_data.append(column_value)
 
@@ -1828,7 +2137,7 @@ def main(vcf_filepath,
                     # Exceptions
                     if float(row_data[column_names.index("Gemini\nAF")]) < 0.01:
                         row_style = styles["red_text"]
-
+                    # Need purple rule
                     
                     # Assign variant to a sheet using filter functions
                     for sheet in sheets:
@@ -1850,3 +2159,4 @@ def main(vcf_filepath,
     print "### Report complete! ###"
     wb.save(output_filepath)
     print "Output: %s" % output_filepath
+
