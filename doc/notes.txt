@@ -1,0 +1,230 @@
+Python script to convert gemini vcf into xls report
+
+For writing each variant sheet:
+
+
+g_num -> panel_ids
+panel_ids -> list of genes
+chosen_panels_dict = {}
+for panel_id in panel_ids:
+    panel_id -> panel_dict
+    chosen_panels_dict[panel_id] = panel_dict
+
+
+vcf selection - let user enter either a gnum or a path
+
+
+############################################
+
+Possible error in existing script:
+
+    When a variant has 2 alts only the first is reported
+    Only indication that the patient has a second var at that posn is 1,1 genotype
+
+
+    When assigning variants to sheets - what to do when a multialt gets split between sheets!
+    Options; 
+        Adjacent - one will be in the wrong sheet
+        Flag as multialt with pointer to other in pair
+        Both vars in both sheets?
+
+#############################################
+
+
+OMIM API:
+Only disorders have IM
+Genes do not
+Therefore need to get the disorders associated with each gene
+Then get the IM for each disorder
+Maybe filter them by panel - would require matching OMIM disorder names with 
+panel names - probably dodgy
+
+
+
+AF by vid
+samples = 4355 or 5126
+variants = 88 (89 alleles) or 100
+
+89/0.0098 = x
+
+
+django rolodex su-pw rolorolo
+
+
+
+
+
+vcf2xls testing:
+Multialts
+del
+ins
+Gemini
+    AF
+    Het/Hom
+ExAC
+    AF
+    Het/Hom
+Gnomad
+    GAF
+    EAF
+    GHet/Hom
+    EHet/Hom
+
+
+
+
+    # Some genes in the genepanels file have old HGNC identifiers. 
+    # Consequently these gene names do not match those in the 
+    # genes2transcripts file.
+    # This dict is used to map the old alias (the key) to the current
+    # id in the genes2transcripts file(the value).
+
+
+alias_dict = {'DTDST'      :'SLC26A2',
+              'EKLF'       :'KLF1',
+              # chromosome breaking sydromes
+              'C7orf11'    :'MPLKIP',
+              'C7ORF11'    :'MPLKIP',
+              'CSA/ERCC8'  :'ERCC8',
+              'TTDA/GTF2H5':'GTF2H5',
+              'XPG/ERCC5'  :'ERCC5',
+              'DDB2/XPE'   :'DDB2',
+              'CSB/ERCC6'  :'ERCC6',
+              'XPB/ERCC3'  :'ERCC3',
+              'XPD/ERCC2'  :'ERCC2',
+              'XPF/ERCC4'  :'ERCC4',
+              'XPV/POLH'   :'POLH',
+              'FANCG/XRCC9':'FANCG',
+              'FANCL/PHF9' :'FANCL',
+              'OX40'       :'TNFRSF4',
+              'MRE11'      :'MRE11A',
+              'IGHM'       :'IGHMBP2',
+              'FATP4 (SLC27A4)':'SLC27A4',
+              'FATP4(SLC27A4)' :'SLC27A4',
+              'FATP4'      :'SLC27A4',
+              'KCNE5'      :'KCNE1L',
+              'P3H1'       :'LEPRE1',
+              'GNAS1'      :'GNAS',
+              'FBLN4'      :'EFEMP2',
+              }
+
+gene = gene_alias_dict.get(gene, gene)
+
+
+
+
+Take in vcf
+Check exists
+    If not exit
+Check if .annotated.vcf
+    If not annotate in orig vcf dir and save as .annotated.vcf
+    Make annotated the new vcf for subsequent processing
+
+If filename == G:
+
+If filename == C:
+
+If filename == IC:
+
+
+
+
+Take an annotated or unannotated vcf, or sampleID(ambiguous)?
+From that generate an annotated vcf - requires multiple steps
+From filename>manifest or as specified in args determine panels
+From panels determine genes
+Built gene data dict
+Extract data from vcf according to regions defined by data dict.
+
+
+
+
+
+
+
+
+
+Depth across multiple transcripts - arrrgh!
+
+Depth in tx1 = x/y
+
+    subtract
+    regions of tx_n not in tx1 = r2
+Depth in tx2 = cov in r2/r2
+
+
+
+
+
+
+
+
+
+
+
+
+Need to check how variants in multiple txs are currently presented in xls, and how best to do this
+
+Multiple rows - 1 per alt
+and 
+Multiple row - 1 per tx
+
+therefore up to 2 x num_tx rows per variant
+
+
+
+
+
+
+To Do Friday
+
+Need to handle transcript version number mismatches when building csq dict! 
+Is this always safe to do? How can versions differ?
+
+(https://www.ncbi.nlm.nih.gov/books/NBK50679/#RefSeqFAQ.what_causes_the_version_number)
+
+    1) Indels/mismatches
+    2) Extend/truncate 5' or 3' coding/UTR, no addition/removal of exons
+    3) 2, but with addition/removal of terminal exons. No addition/deletion of internal exons or splice sites
+
+Tentatively done - ignore version in making the match, and display the version in the vcf within the xls
+
+
+HNC2 primers NM_001194.3 616017
+
+
+
+Adjust record in regions to return within genes, not exons. i.e. all exons & introns and 5'/3' +/- x
+
+What counts as splicing varinats - according to VEP vs range from boundary
+
+
+
+
+How to define target regions if not with target transcripts?
+
+For each variant in target region
+    report on target transcript(s) if present in annotation
+    report all other transcripts if target transcript(s) absent
+
+
+NGS genotyping
+sampleID and index
+results.csv
+
+
+
+
+
+
+How to define target regions:
+
+Take gencode gtf
+    filter to protein coding gene_type transcript_type
+
+    for each gene
+        build a dict of transcripts
+        for each tx
+            build a dict of exons
+
+        collapse all exons into a set of ranges which define the gene
