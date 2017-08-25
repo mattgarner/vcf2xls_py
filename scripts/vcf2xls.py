@@ -1,4 +1,5 @@
-"""Summary
+"""
+Summary
 """
 import os
 import sys
@@ -2418,4 +2419,3 @@ def main(
     wb.save(output_filepath)                
     print "### Report complete! ###"
     print "Output: %s" % output_filepath
-

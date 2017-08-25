@@ -1,0 +1,25 @@
+1 ROI as gene list
+2 Get all GENCODE refseqs for genes
+3 Get intervals for refseqs
+4 Get variants for intervals (gene by gene for all samples to enable inheritance classification)
+5 Add further annotations
+6 Output variants
+7 Check output against vcf in ROI
+
+
+
+
+
+
+
+1.
+Inputs:
+SampleID -> Manifest
+SampleID + Panel(s) -> Custom analysis
+vcf -> Manifest for each sample (might be diff panels per sample)
+vcf + Panel(s) -> Custom analysis
+vcf + sample_ID -> Manifest for that sample
+vcf + sampleID + panel -> Custom analysis for that panel and sample
+
+
+Should generate a dict sample:[genes]
