@@ -2363,6 +2363,7 @@ def main(
             # Split csqs according to alt and transcript
             csq_dict = get_csq_dict(vcf_record, gene_data_dict, csq_field_keys)
 
+
             # Each transcript/alt combo generates a row
             for alt in alts:
 
