@@ -272,7 +272,6 @@ def execute_query(query, db):
     db.close()
     return result 
     
-
 def geminiDB_query(query):
     """Query the GeminiDB database
     
@@ -292,7 +291,6 @@ def geminiDB_query(query):
     # Run the query
     result = execute_query(query, db)
     return result
-
 
 def gemini_allele_count(chrom, pos, ref, alt):
     """Return the Gemini allele count for a specified variant
@@ -373,7 +371,6 @@ def gemini_allele_count(chrom, pos, ref, alt):
 
     return genotype_count
 
-
 def af_gemini_col(variantrecord, alt, csq, csq_field_keys):
     
     allele_count = gemini_allele_count(variantrecord.chrom, variantrecord.pos, variantrecord.ref, alt)
@@ -383,7 +380,6 @@ def af_gemini_col(variantrecord, alt, csq, csq_field_keys):
     # Ideally would take XX/XY into account but for now assume all diploid
     allele_freq = "%.4f" % (float(variant_allele_count)/(allele_count["total"]*2))
     return allele_freq
-
 
 def het_hom_gemini_col(variantrecord, alt, csq, csq_field_keys):
     
@@ -867,7 +863,7 @@ def add_table(ws, position, dimensions, col_headers, merged_cols, styles):
 
     return ws
 
-def freeze_headers(ws):
+def freeze_header(ws):
     ws.set_panes_frozen(True)
     ws.set_horz_split_pos(1)
     return ws
@@ -884,11 +880,16 @@ def set_row_height(ws, row, row_height):
     ws.row(row).height = 256 * row_height
     return ws
 
+def write_row_to_worksheet(ws, row_number, row_data, style):
+    for col_index, value in enumerate(map(str,row_data)):
+        # print "Row:\t%d\tCol:\t%d\tValue:\t%s" % (row_number, col_index, value)
+        ws.write(row_number, col_index, value, style)
+
 # XLS variant sheet assignment
 def generate_variant_type_filter(variant_types):
-    def variant_type_filter(csq, csq_field_keys):
-        field_name = "Consequence"
-        consequences = get_csq_field(field_name, csq, csq_field_keys)
+    def variant_type_filter(row, col_headers):
+        field_name = "Consequences"
+        consequences = row[col_headers.index(field_name)]
         for variant_type in variant_types:
             if variant_type in consequences:
                 return True
@@ -897,13 +898,13 @@ def generate_variant_type_filter(variant_types):
     return variant_type_filter
 
 def generate_splice_filter(variant_types, flank):
-    def splice_filter(csq, csq_field_keys):
-        csq_field_name = "Consequence"
-        c_dot_field_name = "HGVSc"
-        
-        consequences = get_csq_field(csq_field_name, csq, csq_field_keys)
-        c_dot = get_csq_field(c_dot_field_name, csq, csq_field_keys)
-
+    def splice_filter(row, col_headers):
+        csq_field_name = "Consequences"
+        c_dot_pos_field_name = "Nucleotide pos"
+        c_dot_change_field_name = "Nucleotide change"
+        consequences = row[col_headers.index(csq_field_name)]
+        c_dot = row[col_headers.index(c_dot_pos_field_name)] + row[col_headers.index(c_dot_change_field_name)]
+        print c_dot
         for variant_type in variant_types:
             if variant_type in consequences:
                 # + or - followed by int <= flank
@@ -914,32 +915,29 @@ def generate_splice_filter(variant_types, flank):
     return splice_filter
 
 # XLS data prep
-def variants_to_xls_data(variant, xls_columns):
+def variant_data_to_list(variant, csq_field_keys, xls_columns, column_functions_dict):
     csq_dict = get_csq_dict(variant, csq_field_keys)    
     
+    rows = {}
+    # Each alt has separate row
     for alt in variant.alts:
+        rows[alt] = []
         csqs = csq_dict[alt]
-        alt_prefix = "-"+str(a_index)
-        
-        for c_index, csq in enumerate(csqs):
-            csq_prefix = "-"+str(c_index)
+        # Each csq has separate row
+        for csq in csqs:
             row_data = []
-
-            for c in column_functions:
-                column_headers = c[0]
-                column_function = c[1]
-                column_name, column_value = \
-                    column_headers,\
-                    column_function(variantrecord=variant,
-                                    alt=alt, 
-                                    #transcript=transcript, 
-                                    csq=csq,
-                                    csq_field_keys=csq_field_keys,
-                                    )
-                row_data.append(column_value)
-            print var_prefix+alt_prefix+csq_prefix, row_data
-    pass
-
+            for col_name in xls_columns:
+                col_config = column_functions_dict[col_name]
+                columns = zip(col_config["headers"], col_config["funcs"])
+                for column_function in col_config["funcs"]:
+                    column_value = column_function( variantrecord=variant,
+                                                    alt=alt, 
+                                                    csq=csq,
+                                                    csq_field_keys=csq_field_keys,
+                                                    )
+                    row_data.append(column_value)
+            rows[alt].append(row_data)
+    return rows
 
 ### XLS columns ###
 def gene_col(variantrecord, alt, csq, csq_field_keys):
@@ -959,14 +957,11 @@ def start_col(variantrecord, alt, csq, csq_field_keys):
     return text
     return link
 
-
 def ref_col(variantrecord, alt, csq, csq_field_keys):
     return variantrecord.ref
 
-
 def alt_col(variantrecord, alt, csq, csq_field_keys):
     return alt
-
 
 def qual_score_col(variantrecord, alt, csq, csq_field_keys):
     return variantrecord.qual
@@ -990,7 +985,7 @@ def refseq_col(variantrecord, alt, csq, csq_field_keys):
     return ", ".join(csq_refseqs)
 
 def enst_col(variantrecord, alt, csq, csq_field_keys):
-    field_name = "Gene"
+    field_name = "Feature"
     enst_transcripts = get_csq_field(field_name, csq, csq_field_keys).split("&")
     #assert transcript in csq_transcripts, "Mismatched transcripts!"
     return ", ".join(enst_transcripts)
@@ -1018,7 +1013,6 @@ def c_pos_col(variantrecord, alt, csq, csq_field_keys):
     
     return c_pos
 
-
 def c_change_col(variantrecord, alt, csq, csq_field_keys):
     # Ignored params
     field_name = "HGVSc"
@@ -1043,7 +1037,6 @@ def c_change_col(variantrecord, alt, csq, csq_field_keys):
     
     return c_change
 
-
 def aa_change_col(variantrecord, alt, csq, csq_field_keys):
     # Need to expand aa names from one letter to three letter to be
     # consistent with old report
@@ -1061,7 +1054,6 @@ def sift_col(variantrecord, alt, csq, csq_field_keys):
     field_name = "SIFT"
     sift = get_csq_field(field_name, csq, csq_field_keys)
     return sift
-
 
 def polyphen_col(variantrecord, alt, csq, csq_field_keys):
     field_name = "PolyPhen"
@@ -1145,7 +1137,6 @@ def get_genotype_col(sample_id):
 
 
 
-
 @begin.start
 def main(vcf_filepath, sample_ids=None, panels=None, maternal=None, paternal=None, index=None, relative=None, exon_flank=50):
 
@@ -1209,30 +1200,14 @@ def main(vcf_filepath, sample_ids=None, panels=None, maternal=None, paternal=Non
     #wb = add_summary_sheet(wb, sample_ids, run_folder, styles, gene_data_dict, panel_names)
     if individual_analysis:
 
-        stop_gained_filter = generate_variant_type_filter(["stop_gained_variant","transcript_ablation","start_lost"])
-        frameshift_filter =  generate_variant_type_filter(["frameshift_variant","inframe_insertion","inframe_deletion"])
-        splice_filter =  generate_splice_filter(["splice_region_variant","splice_acceptor_variant","splice_donor_variant"], 5)
-        missense_filter = generate_variant_type_filter(["missense_variant","stop_lost"])
-        synonymous_filter = generate_variant_type_filter(["synonymous_variant"])
-        # other_filter should always contain "" to match any type and so act
-        # as a catch-all for variants which pass through all other filters
-        other_filter = generate_variant_type_filter([""])
-
-        sheets = [  #("stop_gained", stop_gained_filter),
-                    #("frameshift_variant", frameshift_filter),
-                    #("splice", splice_filter),
-                    ("missense", missense_filter),
-                    #("synonymous", synonymous_filter),
-                    ("other", other_filter),
-                 ]
-
+        
         # Specify column headers, functions to generate column values,
         # and col widths (in chars)
         # Cols will appear in the same order in the xls report
         # To add a new column add it to this list
 
         # To add per sample cols need to insert a tuple per sample per column at the appropriate pos in the list below
-
+        '''
         column_functions =     [("Gene", gene_col, 14),
                                 ("RefSeq", refseq_col, 16),
                                 ("ENST", enst_col, 16),
@@ -1256,7 +1231,7 @@ def main(vcf_filepath, sample_ids=None, panels=None, maternal=None, paternal=Non
                                 ("Consequences", consequences_col, 30),
                                 ("OMIM\nIM", OMIM_inheritance_col, 10),
                                 ]
-
+        '''
 
         column_functions_dict = {"Gene":    {"funcs": [gene_col],
                                              "headers":["Gene"],
@@ -1322,9 +1297,9 @@ def main(vcf_filepath, sample_ids=None, panels=None, maternal=None, paternal=Non
 
         # Here we handle columns which are sample data specific
         # This is necessary to handle multi sample reports
-        sample_specific_cols = [["Depth", get_depth_col, 7],
-                                ["AAF", get_aaf_col, 6],
-                                ["Genotype", get_genotype_col, 9],
+        sample_specific_cols = [["Depth", get_depth_col, 10],
+                                ["AAF", get_aaf_col, 10],
+                                ["Genotype", get_genotype_col, 10],
                                 ]
 
         for col in sample_specific_cols:
@@ -1343,11 +1318,88 @@ def main(vcf_filepath, sample_ids=None, panels=None, maternal=None, paternal=Non
                 headers.append(sub_col_name)
             
             column_functions_dict[col_name] = {"funcs": funcs,
-                                               "headers":headers,
-                                               "width": width}
+                                                   "headers":headers,
+                                                   "width": width}
+        
 
-        print column_functions
+    
+        # The arrangement of columns in cls variant sheets
+        # Reorder/add/remove to adjust output file
+        xls_columns = [
+                       'Gene',
+                       'RefSeq',
+                       'ENST',
+                       'Chr',
+                       'Start',
+                       'Ref',
+                       'Alt',
+                       'Nucleotide pos',
+                       'Nucleotide change',
+                       'AA change',
+                       'Consequences',
+                       'Score',
+                       'Depth',
+                       'AAF',
+                       'Genotype',
+                       'dbsnp',
+                       'OMIM IM',
+                       'Polyphen',
+                       'SIFT',
+                       'Gemini AF',
+                       'Gemini Het/Hom',
+                       'ExAC AF',
+                       ]
+        
+        col_headers = []
+        col_widths = []
+        for col in xls_columns:
+            headers = column_functions_dict[col]["headers"]
+            widths = [column_functions_dict[col]["width"]] * len(headers)
+            col_headers += headers
+            col_widths += widths
 
+        stop_gained_filter = generate_variant_type_filter(["stop_gained_variant","transcript_ablation","start_lost"])
+        frameshift_filter =  generate_variant_type_filter(["frameshift_variant","inframe_insertion","inframe_deletion"])
+        splice_filter =  generate_splice_filter(["splice_region_variant","splice_acceptor_variant","splice_donor_variant"], 5)
+        missense_filter = generate_variant_type_filter(["missense_variant","stop_lost"])
+        synonymous_filter = generate_variant_type_filter(["synonymous_variant"])
+        # other_filter should always contain "" to match any type and so act
+        # as a catch-all for variants which pass through all other filters
+        other_filter = generate_variant_type_filter([""])
+
+        sheets_config = [   ("stop_gained", stop_gained_filter),
+                            ("frameshift_variant", frameshift_filter),
+                            ("splice", splice_filter),
+                            ("missense", missense_filter),
+                            ("synonymous", synonymous_filter),
+                            ("other", other_filter),
+                 ]
+        
+        sheet_names = [sheet[0] for sheet in sheets_config]
+
+        # Add variant sheets to the workbook
+        sheets = {sheet[0]:wb.add_sheet(sheet[0]) for sheet in sheets_config}
+        current_gene_per_sheet = dict.fromkeys(sheet_names, None)
+        # Track the current row in each of the sheets to enable 
+        # us to write to the correct line as we write records to 
+        # different sheets
+        current_row_index = {sheet:0 for sheet in sheet_names}
+        
+
+        # Add variant sheet headers    
+        for sheet_name, ws in sheets.items():                
+            # Each cell is written individually, so go through each col
+            # in the row. For each cell we need a row index, a col index,
+            # a value and a style
+            for col_index, col_name in enumerate(col_headers):
+                row_index = current_row_index[sheet_name]
+                ws.write(row_index, col_index, col_name, style=styles["headers"])
+            
+            freeze_header(ws)  # Keep header on screen when scrolling
+            set_col_widths(ws, col_widths)
+            header_row_height = 3
+            set_row_height(ws, 0, header_row_height)
+            current_row_index[sheet_name] += 1
 
     elif trio_analysis:
         sheets = [  ("denovo", denovo_filter),
@@ -1359,89 +1411,57 @@ def main(vcf_filepath, sample_ids=None, panels=None, maternal=None, paternal=Non
         print "OOPS"
         exit()
 
-    sheet_names = [sheet[0] for sheet in sheets]
-    column_names = [x[0] for x in column_functions]
-    column_widths = [x[2] for x in column_functions]
 
-    # Add variant sheets to the workbook
-    variant_sheets = {sheet[0]:wb.add_sheet(sheet[0]) for sheet in sheets}
-
-    # Track the current row in each of the sheets to enable 
-    # us to write to the correct line as we write records to 
-    # different sheets
-    current_row_index = {sheet[0]:0 for sheet in sheets}
     
-    # Add variant sheet headers
-    headers_style = styles["headers"]
-    for sheet_name, ws in variant_sheets.items():
-        for col_index, col in enumerate(column_functions):
-            col_name, column_function, _ = col
-            row_index = current_row_index[sheet_name]
-            ws.write(row_index, col_index, col_name, style=headers_style)
-        
-        freeze_headers(ws)  # Keep headers on screen when scrolling
-        set_col_widths(ws, column_widths)
-        headers_row_height = 3
-        set_row_height(ws, 0, headers_row_height)
-        current_row_index[sheet_name] += 1
+    
 
-    wb.save("test.xls")
-
-    xls_columns = [
-                   'AAF',
-                   'Chr',
-                   'Genotype',
-                   'Start',
-                   'Polyphen',
-                   'SIFT',
-                   'Score',
-                   'Nucleotide pos',
-                   'Ref',
-                   'RefSeq',
-                   'ENST',
-                   'Nucleotide change',
-                   'Gemini Het/Hom',
-                   'Consequences',
-                   'Depth',
-                   'ExAC AF',
-                   'Gene',
-                   'dbsnp',
-                   'AA change',
-                   'OMIM IM',
-                   'Alt',
-                   'Gemini AF']
     # Identify the variants affecting a gene
     # We go one gene at a time to make identification of compound hets easier
     for gene, regions in sorted(gene_regions.items()):
-        
+        print "\n\n##GENE##"
+        print gene
         gene_variants = get_variants_in_regions(vcf_in, regions, exon_flank)
-
+        print [var.rid for var in gene_variants]
+        raw_input()
         for v_index, variant in enumerate(gene_variants):
-            output_lines = variants_to_xls_data(variant, xls_columns)
-            print "V-A-C"
-            var_prefix = str(v_index)
-            csq_dict = get_csq_dict(variant, csq_field_keys)    
-            
-            for a_index, alt in enumerate(variant.alts):
-                csqs = csq_dict[alt]
-                alt_prefix = "-"+str(a_index)
-                
-                for c_index, csq in enumerate(csqs):
-                    csq_prefix = "-"+str(c_index)
-                    row_data = []
+            print "\n##VARIANT##"
+            print variant
+            output_lines = variant_data_to_list(variant, csq_field_keys, xls_columns, column_functions_dict)
+            for alt, rows in output_lines.items():
+                print "##Data##"
+                for row_data in rows:
+                    
+                    print row_data
+                    continue
 
-                    for c in column_functions:
-                        column_headers = c[0]
-                        column_function = c[1]
-                        column_name, column_value = \
-                            column_headers,\
-                            column_function(variantrecord=variant,
-                                            alt=alt, 
-                                            #transcript=transcript, 
-                                            csq=csq,
-                                            csq_field_keys=csq_field_keys,
-                                            )
-                        row_data.append(column_value)
-                    print var_prefix+alt_prefix+csq_prefix, row_data
-                #print list(variant.info)
+                    # Apply style rules
+                    # Default:
+                    row_style = styles["plain_text"]
+                    # Exceptions
+                    if float(row_data[col_headers.index("Gemini\nAF")]) < 0.01:
+                        row_style = styles["red_text"]
+                    # Need purple rule
+                    
+                    # Assign variant to a sheet using filter functions
+                    for sheet in sheets_config:
+                        sheet_name, sheet_filter = sheet
+                        if sheet_filter(row_data, col_headers):
+                            ws = sheets[sheet_name]
+                            
+                            # Add an empty row between genes
+                            if (current_gene_per_sheet[ws.name] != None) \
+                            and (row_data[col_headers.index("Gene")] != current_gene_per_sheet[ws.name]):
+                                current_row_index[ws.name] += 1 
+                            
+                            write_row_to_worksheet(ws, current_row_index[ws.name], row_data, row_style)
+                            #if len(alts) > 1:
+                            #    print "\t".join(map(str,row_data))
+
+                            current_row_index[ws.name] += 1
+                            current_gene_per_sheet[ws.name] = row_data[col_headers.index("Gene")]
+                            break
+    
+
+
+    wb.save("test.xls")
 
